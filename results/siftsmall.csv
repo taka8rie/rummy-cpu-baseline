@@ -1,0 +1,6 @@
+dataset,nlist,nprobe,bs,k,threads,nq,query_ms,recall
+siftsmall,64,1,8,10,8,96,0.0857,55.31
+siftsmall,64,2,8,10,8,96,0.1443,73.65
+siftsmall,64,4,8,10,8,96,0.0041,87.60
+siftsmall,64,8,8,10,8,96,0.0667,97.08
+siftsmall,64,16,8,10,8,96,0.0095,99.90

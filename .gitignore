@@ -1,0 +1,10 @@
+# datasets and generated artifacts stay out of git
+data/
+build/
+*.fvecs
+*.ivecs
+*.bvecs
+*.tar.gz
+*.index
+*.log
+.DS_Store
