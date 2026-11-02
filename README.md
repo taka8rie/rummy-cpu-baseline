@@ -93,8 +93,8 @@ $B --base $D/sift_base.fvecs --learn $D/sift_learn.fvecs --query $D/sift_query.f
 - Ubuntu 20.04 自带 CMake 3.16，低于项目要求的 3.17；`setup.sh` 用 pip 安装 CMake 3.x。
 - 官方 `cpu` 分支的 `eval/overall.cpp` 把数据路径（`/billion-data/...`）和线程数（40 / 64）写死了，所以另写了 `bench_cpu_small`。
 - 用 gcc 13 编译官方代码会报 `uint8_t has not been declared`（缺 `#include <cstdint>`），可加 `-DCMAKE_CXX_FLAGS="-include cstdint"`；Ubuntu 20.04 的 gcc 9 无此问题。
-- TEXMEX 官方 FTP 速度慢，且可能报 `425`；改用 Hugging Face 镜像，或给 curl 加 `--disable-epsv`。
-- 网络慢时 `git clone` 可能中途断开；`setup.sh` 支持把源码包 `rummy_src.tar.gz` 放在 `scripts/` 下离线解压。
+- TEXMEX 官方 FTP 速度慢，改用 Hugging Face 镜像。
+- 网络慢时 `git clone` 中途断开；`setup.sh` 支持把源码包 `rummy_src.tar.gz` 放在 `scripts/` 下离线解压。
 
 ## 数据来源
 
