@@ -1,0 +1,194 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index efc8263..db19a72 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -13,7 +13,8 @@ project(faiss
+   LANGUAGES CXX)
+ include(GNUInstallDirs)
+ 
+-set(CMAKE_CXX_STANDARD 11)
++set(CMAKE_CXX_STANDARD 17)
++set(CMAKE_CUDA_STANDARD 17)  # Kaggle/CUDA 13: CCCL/Thrust requires at least C++17
+ 
+ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+ 
+diff --git a/eval/overall.cu b/eval/overall.cu
+index 61dc177..75ce383 100644
+--- a/eval/overall.cu
++++ b/eval/overall.cu
+@@ -142,16 +142,52 @@ double inter_sec(int *taget, int *gt, int k){
+ // ./script dataset-name bs topk (./overall deep 256 10)
+ int main(int argc,char **argv){
+     std::cout << argc << " arguments" <<std::endl;
+-    if(argc - 1 != 3){
+-        printf("You should at least input 3 params: the dataset name, batch size and topk\n");
+-        return 0;
++        // --- Kaggle / CLI mode: named args (mirrors bench_cpu_small.cpp) ---
++    // ./overall --base B --learn L --query Q --gt G [--gtd D] --nlist 256
++    //           --nprobe N --bs B --k 10 --threads 4 --pool-mib 512
++    //           [--dim 128] [--nq 10000] [--dataset sift]
++    // Legacy positional form (dataset, bs, topk) is still supported.
++    std::string p1, p2, p3;
++    int input_k = 10, bs = 8, ncentroids = 256;
++    std::string cli_base, cli_learn, cli_query, cli_gt, cli_gtd;
++    int cli_nprobe = -1, cli_threads = 8, cli_dim = 128, cli_nq = 10000;
++    size_t cli_pool_mib = (size_t)36 * 1024; // MiB; 36 GiB = original kMaxDeviceMem
++    std::string cli_dataset = "sift";
++    bool use_cli = (argc >= 2 && std::string(argv[1]).rfind("--", 0) == 0);
++    auto get_arg = [&](const char* name) -> std::string {
++        for (int i = 1; i + 1 < argc; i++)
++            if (std::string(argv[i]) == name) return argv[i + 1];
++        return "";
++    };
++    auto get_int = [&](const char* name, int dflt) -> int {
++        std::string v = get_arg(name);
++        return v.empty() ? dflt : std::stoi(v);
++    };
++    if (use_cli) {
++        cli_base = get_arg("--base"); cli_learn = get_arg("--learn");
++        cli_query = get_arg("--query"); cli_gt = get_arg("--gt"); cli_gtd = get_arg("--gtd");
++        cli_dataset = get_arg("--dataset"); if (cli_dataset.empty()) cli_dataset = "sift";
++        p1 = cli_dataset;
++        bs = get_int("--bs", 8); input_k = get_int("--k", 10);
++        ncentroids = get_int("--nlist", 256);
++        cli_nprobe = get_int("--nprobe", -1);
++        cli_threads = get_int("--threads", 4);
++        cli_pool_mib = (size_t)get_int("--pool-mib", 512);
++        cli_dim = get_int("--dim", 128);
++        cli_nq = get_int("--nq", 10000);
++        if (cli_base.empty() || cli_learn.empty() || cli_query.empty() || cli_gt.empty()) {
++            printf("Missing required --base/--learn/--query/--gt\n");
++            return 0;
++        }
++    } else {
++        if (argc - 1 != 3) {
++            printf("You should at least input 3 params: the dataset name, batch size and topk\n");
++            return 0;
++        }
++        p1 = argv[1]; p2 = argv[2]; p3 = argv[3];
++        input_k = std::stoi(p3);
++        bs = std::stoi(p2);
+     }
+-    std::string p1 = argv[1];
+-    std::string p2 = argv[2];
+-    std::string p3 = argv[3];
+-    int input_k = std::stoi(p3);
+-    int bs = std::stoi(p2);
+-    int ncentroids;
+ 
+     std::string db, train_db, query, gtI, gtD;
+     int dim;
+@@ -194,15 +230,26 @@ int main(int argc,char **argv){
+         gtD = "/workspace/data-gpu/text/text30Mgtd.fvecs";
+         dim = 200;
+         ncentroids = 192;
++    } else if (p1 == "sift1m") {
++        db = "/kaggle/working/data/sift/sift_base.fvecs";
++        train_db = "/kaggle/working/data/sift/sift_learn_100k.fvecs";
++        query = "/kaggle/working/data/sift/sift_query.fvecs";
++        gtI = "/kaggle/working/data/sift/sift_groundtruth.ivecs";
++        dim = 128;
++        ncentroids = 256;
+     }
+     else{
+         printf("Your input dataset is not included yet! \n");
+         return 0;
+     }
++    if (use_cli) {
++        db = cli_base; train_db = cli_learn; query = cli_query; gtI = cli_gt; gtD = cli_gtd;
++        dim = cli_dim;
++    }
+ 
+     auto t0 = elapsed();
+ 
+-    omp_set_num_threads(8);
++    omp_set_num_threads(cli_threads);
+ 
+     faiss::gpu::PipeGpuResources* pipe_res = new faiss::gpu::PipeGpuResources();
+     faiss::IndexIVFPipeConfig config;
+@@ -278,17 +325,6 @@ int main(int argc,char **argv){
+         delete[] gt_int;
+     }
+ 
+-    float *gtd;
+-    {
+-        printf("[%.3f s] Loading ground truth for %ld queries\n",
+-               elapsed() - t0,
+-               nq);
+-
+-        // load ground-truth and convert int to long
+-        size_t nq2;
+-        gtd = fvecs_read(gtD.c_str(), &k, &nq2);
+-        assert(nq2 == nq || !"incorrect nb of ground truth entries");
+-    }
+ 
+     printf("[%.3f s] Start Balancing\n",
+                elapsed() - t0);
+@@ -297,6 +333,9 @@ int main(int argc,char **argv){
+                elapsed() - t0, index->pipe_cluster->bnlist);
+ 
+     auto pc = index->pipe_cluster;
++    
++    pipe_res->setMaxDeviceSize(cli_pool_mib * 1024 * 1024);
++    printf("PipeGpuResources max device size set to %zu MiB\n", cli_pool_mib);
+     pipe_res->initializeForDevice(0, pc);
+ 
+     // Profile
+@@ -314,11 +353,11 @@ int main(int argc,char **argv){
+     printf("[%.3f s] Finish Profile\n",
+                elapsed() - t0);
+ 
+-    nq = 10000;
++    { size_t nq_file = nq; nq = (size_t)cli_nq; if (nq > nq_file) nq = nq_file; }
+     // Start queries
+     std::vector<float> dis(nq * input_k);
+     std::vector<int> idx(nq * input_k);
+-    index->set_nprobe(ncentroids / 32);
++    index->set_nprobe(cli_nprobe > 0 ? cli_nprobe : ncentroids / 32);
+     double tt0, tt1, total = 0., opt = 0., group_time = 0., reorder_time = 0., nogroup = 0.;
+ 
+     int i;
+@@ -348,10 +387,18 @@ int main(int argc,char **argv){
+     printf("Ave Group Time : %.3f ms\n", group_time / i);
+     printf("Ave No Group Time : %.3f ms\n", nogroup / i);
+     printf("Ave accuracy : %.1f%% \n", acc * 100 / (i*bs));
++    {
++        double batch_ms = (i > 0) ? total / i : 0.0;
++        double query_ms = (bs > 0) ? batch_ms / bs : 0.0;
++        double qps = (query_ms > 0) ? 1000.0 / query_ms : 0.0;
++        double recall_pct = (i * bs > 0) ? acc * 100.0 / (i * bs) : 0.0;
++        printf("RESULT nlist=%d nprobe=%d bs=%d k=%d threads=%d nq=%d batches=%d batch_ms=%.3f query_ms=%.4f qps=%.1f recall@10=%.2f%%\n",
++               ncentroids, (cli_nprobe > 0 ? cli_nprobe : ncentroids / 32), bs, input_k, cli_threads,
++               (int)(i * bs), (int)i, batch_ms, query_ms, qps, recall_pct);
++    }
+ 
+     delete[] xq;
+     delete[] gt;
+-    delete[] gtd;
+     delete index;
+     delete pipe_res;
+     return 0;
+diff --git a/faiss/Index.h b/faiss/Index.h
+index 9bee80d..814774d 100644
+--- a/faiss/Index.h
++++ b/faiss/Index.h
+@@ -11,6 +11,7 @@
+ #define FAISS_INDEX_H
+ 
+ #include <faiss/MetricType.h>
++#include <cstdint>  // Kaggle/GCC 13: uint8_t used below (sa_encode/sa_decode) is no longer transitively included
+ #include <cstdio>
+ #include <sstream>
+ #include <string>
+diff --git a/faiss/gpu/CMakeLists.txt b/faiss/gpu/CMakeLists.txt
+index f346d00..a7a9826 100644
+--- a/faiss/gpu/CMakeLists.txt
++++ b/faiss/gpu/CMakeLists.txt
+@@ -186,5 +186,5 @@ endif ()
+ find_package(CUDAToolkit REQUIRED)
+ target_link_libraries(faiss PRIVATE CUDA::cudart CUDA::cublas)
+ target_link_libraries(faiss_avx2 PRIVATE CUDA::cudart CUDA::cublas)
+-target_compile_options(faiss PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:-Xfatbin=-compress-all> ${PRJ_COMPILE_OPTIONS})
+-target_compile_options(faiss_avx2 PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:-Xfatbin=-compress-all> ${PRJ_COMPILE_OPTIONS})
++target_compile_options(faiss PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:-Xfatbin=-compress-all> $<$<COMPILE_LANGUAGE:CUDA>:${PRJ_COMPILE_OPTIONS}>)
++target_compile_options(faiss_avx2 PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:-Xfatbin=-compress-all> $<$<COMPILE_LANGUAGE:CUDA>:${PRJ_COMPILE_OPTIONS}>)
